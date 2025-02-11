@@ -11,9 +11,9 @@
            (mesh-resolution (/ 50d0 refine))
            (offset (* mesh-resolution 2))
            (datum (+ 100d0 offset))
-           (domain-size (list 2000d0 400d0 600d0))
+           (domain-size (list 3000d0 400d0))
            (element-count (mapcar (lambda (x) (round x mesh-resolution)) domain-size))
-           (block-size (list 1000d0 200d0 600d0)))
+           (block-size (list 1000d0 200d0)))
       (setf *sim* (cl-mpm/setup::make-simple-sim mesh-resolution element-count
                                                  :sim-type
                                                  ;; 'cl-mpm/damage::mpm-sim-damage
@@ -68,8 +68,8 @@
             (* 0.5d0
                (sqrt 1d4)
                (cl-mpm/setup:estimate-critical-damping *sim*)))
-      ;; (cl-mpm/setup::set-mass-filter *sim* density :proportion 1d-2)
-      ;; (setf (cl-mpm::sim-enable-fbar *sim*) t)
+      ;(cl-mpm/setup::set-mass-filter *sim* density :proportion 1d-3)
+      ;(setf (cl-mpm::sim-enable-fbar *sim*) t)
       ;; (setf (cl-mpm/damage::sim-enable-length-localisation *sim*) t)
       (setf (cl-mpm::sim-allow-mp-split *sim*) t)
       ;; (setf (cl-mpm::sim-velocity-algorithm *sim*) :PIC)
@@ -156,7 +156,7 @@
     (setf (cl-mpm::sim-enable-damage *sim*) t)
     (setf (cl-mpm:sim-mass-scale *sim*) 1d8)
     (setf (cl-mpm:sim-damping-factor *sim*)
-          (* 1d-2
+          (* 1d-3
              (sqrt (cl-mpm:sim-mass-scale *sim*))
              (cl-mpm/setup:estimate-critical-damping *sim*)))
 
@@ -176,12 +176,25 @@
       (loop for step from 0 below 1000
             while *run-sim*
             do
-               (when (= rank 0)
-                 (format t "Step ~D~%" step))
-               (cl-mpm/output:save-vtk (merge-pathnames *output-directory* (format nil "sim_~2,'0d_~5,'0d.vtk" rank *sim-step*)) *sim*)
-               (cl-mpm/output::save-vtk-nodes (merge-pathnames *output-directory* (format nil "sim_nodes_~2,'0d_~5,'0d.vtk" rank *sim-step*)) *sim*)
-               (setf work 0d0)
-               (time
+            (progn
+              (let ((mp-arr (make-array (cl-mpi:mpi-comm-size) :element-type 'double-float :initial-element 0d0)))
+                (setf (aref mp-arr rank) (float (length (cl-mpm:sim-mps *sim*)) 0d0))
+                (cl-mpm/mpi::mpi-vector-sum mp-arr)
+                (when (= rank 0)
+                  (format t "Step ~D~%" step)
+                  (format t "Step ~D~%" step)
+                  (format t "MPs: ~{~D ~}" (mapcar #'round (map 'list #'identity mp-arr)))
+                  ))
+              (cl-mpm/mpi::load-balance-algo *sim* 
+                                     :step-size 1d-2
+                                     ;:min-bounds 1.01d0
+                                     ;:max-bounds 1.2d0
+                                     ;:max-bounds (* 2d0 *balance-point* )
+                                     )
+              (cl-mpm/output:save-vtk (merge-pathnames *output-directory* (format nil "sim_~2,'0d_~5,'0d.vtk" rank step)) *sim*)
+              (cl-mpm/output::save-vtk-nodes (merge-pathnames *output-directory* (format nil "sim_nodes_~2,'0d_~5,'0d.vtk" rank step)) *sim*)
+              (setf work 0d0)
+              (time
                 (dotimes (i substeps)
                   (cl-mpm:update-sim *sim*)
                   ;; (cl-mpm::remove-mps-func
@@ -190,40 +203,47 @@
                   ;;    (> (magicl:det (cl-mpm/particle::mp-deformation-gradient mp)) 1.2d0)))
                   ;; (cl-mpm::split-mps-eigenvalue *sim*)
                   (incf work (cl-mpm/dynamic-relaxation::estimate-power-norm *sim*))))
-               (setf oobf (cl-mpm/dynamic-relaxation::estimate-oobf *sim*))
-               (setf energy (cl-mpm/dynamic-relaxation::estimate-energy-norm *sim*))
-               (setf
+              (setf oobf (cl-mpm/dynamic-relaxation::estimate-oobf *sim*))
+              (setf energy (cl-mpm/dynamic-relaxation::estimate-energy-norm *sim*))
+              (setf
                 energy (/ energy substeps)
                 oobf (/ oobf substeps))
-               (if (= work 0d0)
-                   (setf energy 0d0)
-                   (setf energy (abs (/ energy work))))
-               (when (= rank 0)
-                 (format t "OOBF ~E - Energy ~E~%" oobf energy))
+              (if (= work 0d0)
+                  (setf energy 0d0)
+                  (setf energy (abs (/ energy work))))
+              (when (= rank 0)
+                (format t "OOBF ~E - Energy ~E~%" oobf energy)))
             ))))
 (defun mpi-loop ()
   (format t "Starting mpi~%")
   (let ((rank (cl-mpi:mpi-comm-rank)))
-    (setup)
+    (setup :refine 2 :mps 2)
     (when (typep *sim* 'cl-mpm/mpi::mpm-sim-mpi)
+   	  (let* ( (height 1)
+             (dsize (ceiling (cl-mpi:mpi-comm-size) height)))
+        (setf (cl-mpm/mpi::mpm-sim-mpi-domain-count *sim*) (list dsize height 1)))
       (cl-mpm/mpi::setup-domain-bounds *sim*)
-      ;; (cl-mpm/mpi::load-balance *sim*
-      ;;                           :exchange-mps nil
-      ;;                           :step-size 1d-2)
+      (setf cl-mpm/mpi::*prune-nodes* nil)
+      (cl-mpm/mpi::load-balance-algo *sim* 
+                                     :step-size 1d-2
+                                     ;:min-bounds 1.01d0
+                                     ;:max-bounds 1.2d0
+                                     ;:max-bounds (* 2d0 *balance-point* )
+                                     )
       (cl-mpm/mpi::domain-decompose *sim*))
 
     (format t "Rank ~D - Sim MPs: ~a~%" rank (length (cl-mpm:sim-mps *sim*)))
     (when (= rank 0)
       ;; (pprint (mpm-sim-mpi-domain-bounds *sim*))
       (format t "Run mpi~%"))
-    (run)
+    (run :output-dir *output-directory*)
     (when (= rank 0)
       (format t "Done mpi~%"))
     )
   )
 
-;; (defparameter *output-directory* (merge-pathnames "/nobackup/rmvn14/ice/visco-ice/"))
-(defparameter *output-directory* (merge-pathnames "./output/"))
+(defparameter *output-directory* (merge-pathnames "/nobackup/rmvn14/paper-2/visco-ice/"))
+;(defparameter *output-directory* (merge-pathnames "./output/"))
 (let ((threads (parse-integer (if (uiop:getenv "OMP_NUM_THREADS") (uiop:getenv "OMP_NUM_THREADS") "1"))))
   (setf lparallel:*kernel* (lparallel:make-kernel threads :name "custom-kernel"))
   (format t "Thread count ~D~%" threads))
