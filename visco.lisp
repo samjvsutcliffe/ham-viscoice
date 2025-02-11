@@ -5,15 +5,19 @@
 ;; (ql:quickload "cl-mpm/examples/ice-visco")
 (in-package :cl-mpm/examples/ice-visco)
 
-(defun setup (&key (refine 1) (mps 2))
+(defun setup (&key (refine 1) (mps 3))
   (let ((rank (cl-mpi:mpi-comm-rank)))
     (let* ((density 916.7d0)
            (mesh-resolution (/ 50d0 refine))
+           (start-height 300d0)
+           (end-height 200d0)
+           (ice-length 2000d0)
            (offset (* mesh-resolution 2))
            (datum (+ 100d0 offset))
            (domain-size (list 3000d0 400d0))
            (element-count (mapcar (lambda (x) (round x mesh-resolution)) domain-size))
-           (block-size (list 1000d0 200d0)))
+           (block-size (list ice-length (max start-height end-height))))
+           )
       (setf *sim* (cl-mpm/setup::make-simple-sim mesh-resolution element-count
                                                  :sim-type
                                                  ;; 'cl-mpm/damage::mpm-sim-damage
@@ -52,6 +56,12 @@
           :enable-viscosity nil
           :gravity -9.8d0
           )))
+    (cl-mpm/setup::remove-sdf *sim*
+                              (lambda (p)
+                                (cl-mpm/setup::plane-point-point-sdf
+                                 p
+                                 (cl-mpm/utils:vector-from-list (list 0d0 (+ offset start-height) 0d0))
+                                 (cl-mpm/utils:vector-from-list (list ice-length (+ offset end-height) 0d0)))))
       (setf
        (cl-mpm:sim-bcs *sim*)
        (cl-mpm/bc::make-outside-bc-varfix
@@ -217,7 +227,7 @@
 (defun mpi-loop ()
   (format t "Starting mpi~%")
   (let ((rank (cl-mpi:mpi-comm-rank)))
-    (setup :refine 2 :mps 2)
+    (setup :refine 1 :mps 2)
     (when (typep *sim* 'cl-mpm/mpi::mpm-sim-mpi)
    	  (let* ( (height 1)
              (dsize (ceiling (cl-mpi:mpi-comm-size) height)))
@@ -242,9 +252,9 @@
     )
   )
 
-(defparameter *output-directory* (merge-pathnames "/nobackup/rmvn14/paper-2/visco-ice/"))
-;(defparameter *output-directory* (merge-pathnames "./output/"))
-(let ((threads (parse-integer (if (uiop:getenv "OMP_NUM_THREADS") (uiop:getenv "OMP_NUM_THREADS") "1"))))
+;; (defparameter *output-directory* (merge-pathnames "/nobackup/rmvn14/paper-2/visco-ice/"))
+(defparameter *output-directory* (merge-pathnames "./output/"))
+(let ((threads (parse-integer (if (uiop:getenv "OMP_NUM_THREADS") (uiop:getenv "OMP_NUM_THREADS") "16"))))
   (setf lparallel:*kernel* (lparallel:make-kernel threads :name "custom-kernel"))
   (format t "Thread count ~D~%" threads))
 (defparameter *run-sim* nil)
