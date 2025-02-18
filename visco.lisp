@@ -12,11 +12,13 @@
            (start-height 300d0)
            (end-height 200d0)
            (ice-length 2000d0)
+           (ice-depth 800)
+           (domain-depth 1200)
            (offset (* mesh-resolution 2))
            (datum (+ 100d0 offset))
-           (domain-size (list 3000d0 400d0))
+           (domain-size (list 5000d0 500d0 domain-depth))
            (element-count (mapcar (lambda (x) (round x mesh-resolution)) domain-size))
-           (block-size (list ice-length (max start-height end-height))))
+           (block-size (list ice-length (max start-height end-height) ice-depth))
            )
       (setf *sim* (cl-mpm/setup::make-simple-sim mesh-resolution element-count
                                                  :sim-type
@@ -55,13 +57,39 @@
           :visc-power 3d0
           :enable-viscosity nil
           :gravity -9.8d0
-          )))
+          :index 0
+          ))
+        (let ((block-size (list ice-length start-height (- domain-depth ice-depth))))
+          (cl-mpm:add-mps
+            *sim*
+            (cl-mpm/setup:make-block-mps
+              (list 0 offset ice-depth)
+              block-size
+              (mapcar (lambda (e) (* (/ e mesh-resolution) mps)) block-size)
+              density
+              'cl-mpm/particle::particle-elastic
+              :E 1d9
+              :nu 0.325d0
+              ;; :rho 100d3
+              ;; :enable-plasticity nil
+              ;'cl-mpm/particle::particle-finite-viscoelastic-ice
+              ;:E 1d9
+              ;:nu 0.325d0
+              ;:visc-factor 11.1d6
+              ;:visc-power 3d0
+              ;:enable-viscosity nil
+              :gravity -9.8d0
+              :index 1
+              )))
+        
+        )
     (cl-mpm/setup::remove-sdf *sim*
                               (lambda (p)
                                 (cl-mpm/setup::plane-point-point-sdf
                                  p
                                  (cl-mpm/utils:vector-from-list (list 0d0 (+ offset start-height) 0d0))
-                                 (cl-mpm/utils:vector-from-list (list ice-length (+ offset end-height) 0d0)))))
+                                 (cl-mpm/utils:vector-from-list (list ice-length (+ offset end-height) 0d0))))
+                              :index 0)
       (setf
        (cl-mpm:sim-bcs *sim*)
        (cl-mpm/bc::make-outside-bc-varfix
@@ -70,8 +98,8 @@
         '(0 nil nil)
         '(nil 0 nil)
         '(nil 0 nil)
-        '(0 nil 0)
-        '(0 nil 0)))
+        '(nil nil 0)
+        '(0 0 0)))
 
       (setf (cl-mpm:sim-mass-scale *sim*) 1d4)
       (setf (cl-mpm:sim-damping-factor *sim*)
@@ -108,7 +136,7 @@
             1000d0
             (lambda (pos) t))))
       (let ((domain-half (* 0.5d0 (first domain-size)))
-            (friction 0.0d0))
+            (friction 0d0))
         (defparameter *ocean-floor-bc*
           (cl-mpm/penalty::make-bc-penalty-point-normal
            *sim*
@@ -152,6 +180,7 @@
        *sim*
        :oobf-crit 1d-1
        :energy-crit 1d-1
+       :conv-steps 1000
        :dt-scale dt-scale
        :post-iter-step
        (lambda (i oobf energy)
@@ -161,25 +190,24 @@
     (cl-mpm::iterate-over-mps
      (cl-mpm:sim-mps *sim*)
      (lambda (mp)
-       (setf (cl-mpm/particle::mp-enable-viscosity mp) t)))
+       (when (typep mp 'cl-mpm/particle::particle-finite-viscoelastic-ice)
+         (setf (cl-mpm/particle::mp-enable-viscosity mp) t))))
 
     (setf (cl-mpm::sim-enable-damage *sim*) t)
     (setf (cl-mpm:sim-mass-scale *sim*) 1d8)
     (setf (cl-mpm:sim-damping-factor *sim*)
-          (* 1d-3
+          (* 1d-4
              (sqrt (cl-mpm:sim-mass-scale *sim*))
              (cl-mpm/setup:estimate-critical-damping *sim*)))
 
     ;; (setf (cl-mpm/buoyancy::bc-enable *bc-erode*) t)
-    (setf (cl-mpm:sim-dt *sim*)
-          (* 0.5d0 (cl-mpm/setup:estimate-elastic-dt *sim*)))
     (let* ((dt-scale 0.5d0)
            (target-time 1d4)
-           (substeps (ceiling target-time (cl-mpm:sim-dt *sim*)))
            (work 0d0)
            (oobf 0d0)
-           (energy 0d0)
-           )
+           (energy 0d0))
+      (setf (cl-mpm:sim-dt *sim*) (* dt-scale (cl-mpm/setup:estimate-elastic-dt *sim*)))
+      (setf substeps (ceiling target-time (cl-mpm:sim-dt *sim*)))
       (when (= rank 0)
         (format t "Substeps ~D~%" substeps))
 
@@ -227,9 +255,9 @@
 (defun mpi-loop ()
   (format t "Starting mpi~%")
   (let ((rank (cl-mpi:mpi-comm-rank)))
-    (setup :refine 1 :mps 2)
+    (setup :refine 2 :mps 2)
     (when (typep *sim* 'cl-mpm/mpi::mpm-sim-mpi)
-   	  (let* ( (height 1)
+   	  (let* ((height 1)
              (dsize (ceiling (cl-mpi:mpi-comm-size) height)))
         (setf (cl-mpm/mpi::mpm-sim-mpi-domain-count *sim*) (list dsize height 1)))
       (cl-mpm/mpi::setup-domain-bounds *sim*)
@@ -252,8 +280,8 @@
     )
   )
 
-;; (defparameter *output-directory* (merge-pathnames "/nobackup/rmvn14/paper-2/visco-ice/"))
-(defparameter *output-directory* (merge-pathnames "./output/"))
+(defparameter *output-directory* (merge-pathnames "/nobackup/rmvn14/paper-2/visco-ice/"))
+;(defparameter *output-directory* (merge-pathnames "./output/"))
 (let ((threads (parse-integer (if (uiop:getenv "OMP_NUM_THREADS") (uiop:getenv "OMP_NUM_THREADS") "16"))))
   (setf lparallel:*kernel* (lparallel:make-kernel threads :name "custom-kernel"))
   (format t "Thread count ~D~%" threads))

@@ -13,6 +13,6 @@ module load aocl
 module load mvapich2
 export MV2_ENABLE_AFFINITY=0
 
-sbcl --dynamic-space-size 16000  --disable-debugger --load "build_step.lisp" --quit
+#sbcl --dynamic-space-size 16000  --disable-debugger --load "build_step.lisp" --quit
 mpirun ./mpi-worker --dynamic-space-size 16000 --disable-debugger 
 #rm mpi-worker
