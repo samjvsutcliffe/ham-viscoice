@@ -12,8 +12,8 @@
            (start-height 300d0)
            (end-height 200d0)
            (ice-length 2000d0)
-           (ice-depth 800)
-           (domain-depth 1200)
+           (ice-depth 800d0)
+           (domain-depth 1200d0)
            (offset (* mesh-resolution 2))
            (datum (+ 100d0 offset))
            (domain-size (list 5000d0 500d0 domain-depth))
@@ -59,29 +59,28 @@
           :gravity -9.8d0
           :index 0
           ))
-        (let ((block-size (list ice-length start-height (- domain-depth ice-depth))))
-          (cl-mpm:add-mps
-            *sim*
-            (cl-mpm/setup:make-block-mps
-              (list 0 offset ice-depth)
-              block-size
-              (mapcar (lambda (e) (* (/ e mesh-resolution) mps)) block-size)
-              density
-              'cl-mpm/particle::particle-elastic
-              :E 1d9
-              :nu 0.325d0
-              ;; :rho 100d3
-              ;; :enable-plasticity nil
-              ;'cl-mpm/particle::particle-finite-viscoelastic-ice
-              ;:E 1d9
-              ;:nu 0.325d0
-              ;:visc-factor 11.1d6
-              ;:visc-power 3d0
-              ;:enable-viscosity nil
-              :gravity -9.8d0
-              :index 1
-              )))
-        
+        ;; (let ((block-size (list ice-length start-height (- domain-depth ice-depth))))
+        ;;   (cl-mpm:add-mps
+        ;;     *sim*
+        ;;     (cl-mpm/setup:make-block-mps
+        ;;       (list 0 offset ice-depth)
+        ;;       block-size
+        ;;       (mapcar (lambda (e) (* (/ e mesh-resolution) mps)) block-size)
+        ;;       density
+        ;;       'cl-mpm/particle::particle-elastic
+        ;;       :E 1d9
+        ;;       :nu 0.325d0
+        ;;       ;; :rho 100d3
+        ;;       ;; :enable-plasticity nil
+        ;;       ;'cl-mpm/particle::particle-finite-viscoelastic-ice
+        ;;       ;:E 1d9
+        ;;       ;:nu 0.325d0
+        ;;       ;:visc-factor 11.1d6
+        ;;       ;:visc-power 3d0
+        ;;       ;:enable-viscosity nil
+        ;;       :gravity -9.8d0
+        ;;       :index 1
+        ;;       )))
         )
     (cl-mpm/setup::remove-sdf *sim*
                               (lambda (p)
@@ -99,7 +98,7 @@
         '(nil 0 nil)
         '(nil 0 nil)
         '(nil nil 0)
-        '(0 0 0)))
+        '(nil nil 0)))
 
       (setf (cl-mpm:sim-mass-scale *sim*) 1d4)
       (setf (cl-mpm:sim-damping-factor *sim*)
@@ -112,8 +111,15 @@
       (setf (cl-mpm::sim-allow-mp-split *sim*) t)
       ;; (setf (cl-mpm::sim-velocity-algorithm *sim*) :PIC)
       (setf (cl-mpm::sim-velocity-algorithm *sim*) :BLEND)
-      (cl-mpm/setup::initialise-stress-self-weight *sim* datum)
-
+      (cl-mpm/setup::initialise-stress-self-weight-vardatum *sim*
+                                                            (lambda (pos)
+                                                              (let ((alpha (/ (- (cl-mpm/utils::varef pos 0)
+                                                                                 ice-length) ice-length)))
+                                                                (+ offset
+                                                                   (* alpha end-height)
+                                                                   (* (- 1d0 alpha) start-height))))
+                                                            :k-x 1d0
+                                                            :k-z 1d0)
 
 
       (setf (cl-mpm:sim-dt *sim*)
@@ -127,7 +133,7 @@
             *sim*
             datum
             1000d0
-            (lambda (pos) t)))
+            (lambda (pos datum) t)))
           (cl-mpm:add-bcs-force-list
            *sim*
            (cl-mpm/buoyancy::make-bc-buoyancy-body
@@ -136,7 +142,7 @@
             1000d0
             (lambda (pos) t))))
       (let ((domain-half (* 0.5d0 (first domain-size)))
-            (friction 0d0))
+            (friction 0.8d0))
         (defparameter *ocean-floor-bc*
           (cl-mpm/penalty::make-bc-penalty-point-normal
            *sim*
@@ -146,7 +152,66 @@
                                            offset
                                            0d0))
            (* 1d9 0.1d0)
-           friction)))
+           friction))
+        (let ((domain-half-x (* 0.5d0 (first domain-size)))
+              (domain-half-y (* 0.5d0 (second domain-size)))
+              (domain-y (second domain-size))
+              (domain-z (third domain-size))
+              (epsilon (* 1d9 0.1d0))
+              (wall-depth domain-depth)
+              (friction 0.8d0))
+          (defparameter *floor-side-bc*
+            (cl-mpm/penalty::make-bc-penalty-square
+             *sim*
+             (cl-mpm/utils:vector-from-list '(0d0 0d0 -1d0))
+             (cl-mpm/utils:vector-from-list (list
+                                             0d0
+                                             0d0
+                                             wall-depth))
+             (cl-mpm/utils:vector-from-list (list
+                                             ice-length
+                                             0d0
+                                             0d0))
+             (cl-mpm/utils:vector-from-list (list
+                                             0d0
+                                             domain-y
+                                             0d0))
+             epsilon
+             friction
+             0d0
+             ))
+          (defparameter *floor-end-bc*
+            (cl-mpm/penalty::make-bc-penalty-square
+             *sim*
+             (cl-mpm/utils:vector-from-list '(1d0 0d0 0d0))
+             (cl-mpm/utils:vector-from-list (list
+                                             ice-length
+                                             0d0
+                                             wall-depth
+                                             ))
+             (cl-mpm/utils:vector-from-list (list
+                                             0d0
+                                             0d0
+                                             (- domain-z wall-depth)
+                                             ))
+             (cl-mpm/utils:vector-from-list (list
+                                             0d0
+                                             domain-y
+                                             0d0))
+             epsilon
+             friction
+             0d0
+             ))
+          (defparameter *wall-struct-bc*
+            (cl-mpm/penalty::make-bc-penalty-structure
+             *sim*
+             epsilon
+             friction
+             0d0
+             (list
+              *floor-side-bc*
+              ;; *floor-end-bc*
+              )))))
 
       (defparameter *bc-erode*
         (cl-mpm/erosion::make-bc-erode
@@ -159,10 +224,15 @@
                       (>= datum (cl-mpm/utils:varef pos 1))
                       ;; (and (>= (+ offset mesh-resolution) (cl-mpm/utils:varef pos 1)))
                       )))
-      (cl-mpm:add-bcs-force-list
-       *sim*
-       *ocean-floor-bc*
-       )
+      ;; (cl-mpm:add-bcs-force-list
+      ;;  *sim*
+      ;;  *ocean-floor-bc*
+      ;;  )
+      ;; (cl-mpm:add-bcs-force-list
+      ;;  *sim*
+      ;;  *floor-side-bc*
+      ;;  ;; *wall-struct-bc*
+      ;;  )
       ;; (cl-mpm:add-bcs-force-list
       ;;  *sim*
       ;;  *bc-erode*
@@ -255,7 +325,7 @@
 (defun mpi-loop ()
   (format t "Starting mpi~%")
   (let ((rank (cl-mpi:mpi-comm-rank)))
-    (setup :refine 2 :mps 2)
+    (setup :refine 1 :mps 2)
     (when (typep *sim* 'cl-mpm/mpi::mpm-sim-mpi)
    	  (let* ((height 1)
              (dsize (ceiling (cl-mpi:mpi-comm-size) height)))
@@ -280,8 +350,8 @@
     )
   )
 
-(defparameter *output-directory* (merge-pathnames "/nobackup/rmvn14/paper-2/visco-ice/"))
-;(defparameter *output-directory* (merge-pathnames "./output/"))
+;; (defparameter *output-directory* (merge-pathnames "/nobackup/rmvn14/paper-2/visco-ice/"))
+(defparameter *output-directory* (merge-pathnames "./output/"))
 (let ((threads (parse-integer (if (uiop:getenv "OMP_NUM_THREADS") (uiop:getenv "OMP_NUM_THREADS") "16"))))
   (setf lparallel:*kernel* (lparallel:make-kernel threads :name "custom-kernel"))
   (format t "Thread count ~D~%" threads))
